@@ -1,0 +1,92 @@
+[package]
+edition      = "2024"
+name         = "xi_cast"
+rust-version = "1.88"
+version      = "0.1.0"
+
+[[bin]]
+name = "xi_cast"
+path = "./src/bin/main.rs"
+test = false
+
+[lib]
+test = false
+
+# 这个固件**不用 defmt**，所有日志走串口（esp-println + log）。
+#
+# 原因是实测出来的：这块板子用 ESP32-S3 内置的 USB-Serial-JTAG，
+# `probe-rs run` 烧录一切正常，但 RTT 一个字都读不出来 —— 等于没有日志，
+# 连 panic 都看不见。改成串口之后同一根 USB 线就够了，
+# `espflash monitor` 直接显示，也不需要调试器。
+#
+# 所以下面所有依赖都**没有开 defmt 特性**，`build.rs` 里也不再链接 defmt.x。
+[dependencies]
+esp-hal = { version = "~1.1.0", features = ["esp32s3", "unstable"] }
+
+esp-rtos = { version = "0.3.0", features = [
+  "embassy",
+  "esp-alloc",
+  "esp-radio",
+  "esp32s3",
+] }
+
+esp-bootloader-esp-idf = { version = "0.5.0", features = ["esp32s3"] }
+
+# 投屏逻辑的本体。和电脑上的模拟器共用同一份代码 —— 见工作区根目录的 README。
+xi-cast-core = { path = "../core", features = ["log"] }
+# 0.17 才是配 esp-hal 1.1 的那一版（0.18 要 esp-sync 0.3 / esp-hal 1.2）
+esp-println  = { version = "0.17.0", features = ["esp32s3", "log-04"] }
+log          = "0.4"
+
+# flash 读写。0.9 才是配 esp-hal 1.1 的那一版（0.10 要 esp-hal 1.2）
+esp-storage      = { version = "0.9.0", features = ["esp32s3", "critical-section"] }
+embedded-storage = "0.3.1"
+
+embassy-net = { version = "0.9.1", features = [
+  "dhcpv4",
+  # 按域名连 mapi1.kxm.xmtv.cn 要用 Stack::dns_query
+  "dns",
+  "medium-ethernet",
+  # SSDP 要往 239.255.255.250 发组播
+  "multicast",
+  "tcp",
+  "udp",
+] }
+embedded-io       = "0.7.1"
+embedded-io-async = "0.7.0"
+esp-alloc         = "0.10.0"
+embassy-executor  = "0.10.0"
+embassy-time      = "0.5.0"
+esp-radio = { version = "0.18.0", features = [
+  "esp-alloc",
+  "esp32s3",
+  "unstable",
+  "wifi",
+] }
+smoltcp = { version = "0.13.0", default-features = false, features = [
+  "medium-ethernet",
+  "multicast",
+  "proto-dhcpv4",
+  "proto-dns",
+  "proto-ipv4",
+  "socket-dns",
+  "socket-icmp",
+  "socket-raw",
+  "socket-tcp",
+  "socket-udp",
+] }
+
+critical-section = "1.2.0"
+static_cell      = "2.1.1"
+
+# For fine tuning these settings, please refer to https://doc.rust-lang.org/cargo/reference/profiles.html
+[profile.dev]
+# The default debug profile is too slow and too big for resource-constrained devices.
+# Always build with some optimizations enabled.
+opt-level = "s"
+
+[profile.release]
+codegen-units = 1     # LLVM can perform better optimizations using a single thread
+debug         = 2     # prefer slower builds but better debugging experience
+lto           = 'fat'
+opt-level     = 's'

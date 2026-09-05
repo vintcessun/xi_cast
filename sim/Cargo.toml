@@ -1,0 +1,20 @@
+[package]
+name        = "xi-cast-sim"
+default-run = "xi-cast-sim"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+description = "在电脑上跑固件逻辑：假电视、假 xmtv、假 flash，没有开发板也能把功能测完"
+
+[dependencies]
+xi-cast-core = { workspace = true, features = ["log"] }
+heapless.workspace = true
+
+embedded-io-async = "0.7.0"
+embedded-storage  = "0.3.1"
+env_logger        = "0.11"
+log               = "0.4"
+# 在真实局域网上当接收端时要用到：Windows 的 SSDPSRV 占着 1900 端口，
+# 想一起收组播就得 SO_REUSEADDR，而 tokio 的 UdpSocket 没有这个开关
+socket2 = "0.5"
+tokio   = { version = "1", features = ["full"] }

@@ -1,0 +1,23 @@
+# 工作区里只放**能在电脑上跑测试**的两个 crate。
+#
+# 固件（firmware/）故意不是工作区成员：它自带 `.cargo/config.toml`，里面写死了
+# `target = xtensa-esp32s3-none-elf`、`build-std` 和 `-nostartfiles` 之类的链接参数。
+# 一旦它进了工作区，根目录下敲 `cargo test` 会把这些参数一起带上，
+# 主机链接器直接报错。分开之后：
+#
+#   cargo test                   # 在电脑上跑，几秒钟出结果
+#   cd firmware && cargo build   # 交叉编译到 ESP32-S3
+[workspace]
+members  = ["core", "sim"]
+exclude  = ["firmware"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+version = "0.1.0"
+
+[workspace.dependencies]
+xi-cast-core = { path = "core" }
+
+heapless = { version = "0.9.3", default-features = false }

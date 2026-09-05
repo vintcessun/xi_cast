@@ -1,0 +1,58 @@
+name: Continuous Integration
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "**/README.md"
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # 电脑上跑的那一半：核心逻辑 + 模拟器。这里跑的用例覆盖了投屏协议、
+  # 追加式 flash 目录、掉电恢复和整条投屏流程，几秒钟就能出结果。
+  host:
+    name: 主机测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: 格式
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: 测试
+        run: cargo test --workspace
+
+  # 交叉编译固件。firmware/ 不是工作区成员（它自带 .cargo/config.toml），
+  # 所以要单独进去编。
+  firmware:
+    name: 固件交叉编译
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: esp-rs/xtensa-toolchain@v1.5
+        with:
+          default: true
+          buildtargets: esp32s3
+          ldproxy: false
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: firmware
+      - name: 编译
+        # CI 上没有 wifi.toml（那个文件不进版本库），build.rs 会留空并打一条
+        # warning，编译照样能过
+        run: cargo build --release
+        working-directory: firmware
+      - name: clippy
+        # 这里不加 --all-features：esp-radio 有几个互斥的特性
+        # （esp-now / sniffer 之类），全打开反而编不过
+        run: cargo clippy --release -- -D warnings
+        working-directory: firmware

@@ -1,0 +1,24 @@
+[package]
+name    = "xi-cast-core"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+description = "投屏协议 + 追加式 flash 目录，no_std，固件和电脑模拟器共用同一份代码"
+
+[dependencies]
+heapless.workspace = true
+
+# flash 抽象直接复用嵌入式生态的标准 trait，这样固件里的 esp-storage
+# 和模拟器里的假 flash 是同一套接口，测试测的就是上板要跑的那份代码。
+embedded-storage  = "0.3.1"
+embedded-io-async = "0.7.0"
+
+defmt = { version = "1.0.1", optional = true }
+log   = { version = "0.4", optional = true }
+
+[features]
+default = []
+## 日志打到 defmt（固件用，走 RTT）
+defmt = ["dep:defmt", "heapless/defmt"]
+## 日志打到 log crate（电脑上的模拟器用，走 env_logger）
+log = ["dep:log"]

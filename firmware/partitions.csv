@@ -1,0 +1,22 @@
+# xi_cast 的分区表。
+#
+# 比默认表多了最后那个 `xicast` 数据分区 —— 节目目录就存在里面。
+#
+# 烧录（只需要做一次，之后 `cargo run` 走 probe-rs 就行）：
+#
+#     cd firmware
+#     cargo build --release
+#     espflash flash --partition-table partitions.csv target/xtensa-esp32s3-none-elf/release/xi_cast
+#
+# 尺寸是这么算出来的：一条节目记录 48 字节（见 core/src/store.rs 的测试
+# 「一条节目记录多大」），全部 2291 条约 110KB。分区对半分成两个 bank，
+# 512KB 的分区就是两个 256KB 的 bank，装 110KB 的数据只用掉 43%，
+# 剩下的留给视频直链缓存，而且离「满了要丢老数据」还差得远。
+#
+# 整张表结束于 0x390000（3.56MB），所以 4MB 的模组也能用。
+#
+# Name,     Type, SubType,   Offset,   Size,   Flags
+nvs,        data, nvs,       0x9000,   0x6000,
+phy_init,   data, phy,       0xf000,   0x1000,
+factory,    app,  factory,   0x10000,  3M,
+xicast,     data, undefined, 0x310000, 512K,
