@@ -35,7 +35,7 @@
 //! [`MultiCoreStrategy::Error`]: https://docs.rs/esp-storage
 
 use esp_bootloader_esp_idf::partitions::{
-    self, PartitionEntry, PartitionTable, PARTITION_TABLE_MAX_LEN,
+    self, PARTITION_TABLE_MAX_LEN, PartitionEntry, PartitionTable,
 };
 use esp_storage::FlashStorage;
 
@@ -60,8 +60,8 @@ pub fn open(
     flash: &'static mut FlashStorage<'static>,
     table_buf: &'static mut [u8; PARTITION_TABLE_MAX_LEN],
 ) -> Result<CatalogFlash, Error> {
-    let table: PartitionTable<'static> = partitions::read_partition_table(flash, table_buf)
-        .map_err(|_| Error::TableUnreadable)?;
+    let table: PartitionTable<'static> =
+        partitions::read_partition_table(flash, table_buf).map_err(|_| Error::TableUnreadable)?;
 
     let entry: PartitionEntry<'static> = table
         .iter()

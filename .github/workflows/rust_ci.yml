@@ -52,7 +52,12 @@ jobs:
         run: cargo build --release
         working-directory: firmware
       - name: clippy
-        # 这里不加 --all-features：esp-radio 有几个互斥的特性
-        # （esp-now / sniffer 之类），全打开反而编不过
+        # 这里既不加 --all-features 也不加 --all-targets：
+        # * --all-features：esp-radio 有几个互斥的特性（esp-now / sniffer 之类），
+        #   全打开反而编不过；
+        # * --all-targets：它包含 --tests，而 xtensa-esp32s3-none-elf 上没有
+        #   test crate、也没有测试用的 panic handler，必然报
+        #   `can't find crate for test`。裸机固件上有意义的范围就是 lib + bins，
+        #   也就是下面这条默认的范围。
         run: cargo clippy --release -- -D warnings
         working-directory: firmware

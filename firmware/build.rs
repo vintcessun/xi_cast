@@ -59,23 +59,19 @@ fn wifi_credentials() {
     let bssid = std::env::var("WIFI_BSSID").unwrap_or(bssid);
     let channel = std::env::var("WIFI_CHANNEL").unwrap_or(channel);
 
+    // 只有**真的配错了**才用 cargo:warning。
+    //
+    // 构建脚本除了 cargo:warning 没有别的办法往终端打字，很容易顺手拿它
+    // 打提示，结果就是每次编译都刷一屏「警告」，真正的警告反而被淹掉。
+    // 「用哪台电视」「锁了哪个 BSSID」这些固件开机时会原样打到串口上，
+    // 不需要在编译期再说一遍。
     if ssid.is_empty() {
         println!(
             "cargo:warning=没有找到 WiFi 配置：复制 firmware/wifi.toml.example 成 wifi.toml 并填上账号密码"
         );
     }
-    if !tv_ip.is_empty() {
-        println!("cargo:warning=只认电视 {tv_ip}（只问它一台，绝不广播扫描）");
-    } else if !tv_url.is_empty() {
-        println!("cargo:warning=电视地址写死为 {tv_url}（不再扫描）");
-    } else {
-        println!("cargo:warning=没有指定电视，开机会走 SSDP 扫描找设备");
-    }
     println!("cargo:rustc-env=WIFI_SSID={ssid}");
     println!("cargo:rustc-env=WIFI_PASSWORD={password}");
-    if !bssid.is_empty() {
-        println!("cargo:warning=只连 BSSID {bssid}（绕开 2.4G/5G 同名的 band steering）");
-    }
     println!("cargo:rustc-env=TV_URL={tv_url}");
     println!("cargo:rustc-env=TV_IP={tv_ip}");
     println!("cargo:rustc-env=WIFI_BSSID={bssid}");
