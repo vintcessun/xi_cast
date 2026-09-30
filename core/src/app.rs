@@ -18,6 +18,9 @@
 //!    │    ├─ 上次记着的那台还在吗？（一次 HTTP，几十毫秒）
 //!    │    └─ 不在 → SSDP 扫描
 //!    │
+//!    ├─ 电视没开机 → 隔一阵子顺手更新一次节目表，再回来接着找
+//!    │              （见 [`App::idle_update`]）
+//!    │
 //!    └─ 循环：随机挑一部戏 → 逐集投 → 播完换下一集
 //!         └─ 空隙里顺手做增量更新 / 往回补历史节目
 //! ```
@@ -100,6 +103,15 @@ pub struct Config {
     pub first_pages: u32,
     /// 增量更新最多翻几页（正常一天就一条，翻一页就够）。
     pub sync_pages: u32,
+    /// 电视没开机时，每隔这么多轮「找电视失败」顺手更新一次节目表。
+    ///
+    /// 0 表示关掉这个行为。
+    ///
+    /// 为什么要节流：一轮 =「找一遍电视（找不到）+ 等 [`Self::retry_ms`]」。
+    /// 板子上实测电视关着时一轮约 90 秒 —— 单播 M-SEARCH 等不到回应，
+    /// 再挨个试 [`WELL_KNOWN_DESC`] 里那几个端口，每个都要等到 TCP 超时。
+    /// 所以 10 轮大约是一刻钟问一次上游；上游一天才多一条节目，够勤快了。
+    pub idle_sync_every: u32,
     /// 只认这个 IP 上的设备，**绝不广播扫描**。
     ///
     /// 电视的 IP 在路由器里绑死之后就该用这个。和写死完整地址
@@ -136,6 +148,7 @@ impl Default for Config {
             poll_ms: 2000,
             first_pages: 5,
             sync_pages: 3,
+            idle_sync_every: 10,
             fixed_ip: None,
             fixed_device: None,
             cast_share_page: false,
@@ -723,6 +736,32 @@ where
         }
     }
 
+    /// 电视没开机时，别干等着 —— 把找电视的间隙用来更新节目表。
+    ///
+    /// 原来的 [`Self::run`] 是「找到电视 → 顺手更新 → 开播」，更新挂在
+    /// 「找到电视」后面。于是电视关一周，节目表就一周不动，等到哪天开机
+    /// 还得现拉一遍。而板子是一直通着电的，这段时间本来就闲着。
+    ///
+    /// `round` 是连续第几轮没找到电视，第 0 轮（刚落空那次）一定会更新一遍，
+    /// 之后每 [`Config::idle_sync_every`] 轮一次。
+    pub async fn idle_update(&mut self, round: u32) {
+        if self.cfg.idle_sync_every == 0 || !round.is_multiple_of(self.cfg.idle_sync_every) {
+            return;
+        }
+        trace_info!("电视还没开，先把节目表更新一下");
+        match self.sync_new().await {
+            Ok(n) if n > 0 => trace_info!("等电视的空当里补了 {} 条新节目", n),
+            // 故意是 info 而不是 debug：板子上唯一的窗口就是串口，
+            // 这一行是「这个机制还在转」的证据，而它一刻钟才出现一次
+            Ok(_) => trace_info!("节目表已经是最新的了"),
+            Err(e) => trace_warn!("等电视时更新节目失败: {}", e.as_str()),
+        }
+        // 历史也一起往回补。补历史一次只翻一页，跟增量更新共用同一个节流
+        if !self.catalog.summary().backfilled {
+            let _ = self.backfill_step().await;
+        }
+    }
+
     /// 一上电就一直放下去，除非断电。
     ///
     /// 这个函数不返回：设备找不到就重试，网络断了就重连，
@@ -749,12 +788,18 @@ where
             );
         }
 
+        // 连着几轮没找到电视。找到了就清零
+        let mut 空等轮数 = 0u32;
+
         loop {
             let Some(renderer) = self.find_renderer().await else {
+                self.idle_update(空等轮数).await;
+                空等轮数 = 空等轮数.wrapping_add(1);
                 trace_warn!("没找到电视，{} 毫秒后再找", self.cfg.retry_ms);
                 self.net.sleep_ms(self.cfg.retry_ms).await;
                 continue;
             };
+            空等轮数 = 0;
 
             // 有电视了，顺手更新一下节目（失败不影响播放）
             if let Err(e) = self.sync_new().await {

@@ -349,6 +349,98 @@ async fn 写死的电视没开机时只等它不投别人() {
 }
 
 #[tokio::test]
+async fn 电视没开机的时候节目表照样会更新() {
+    // 这条盯的是一个真缺陷：原来 `sync_new` 挂在「找到电视」之后，
+    // 电视关一周，节目表就一周不动。板子明明一直通着电，闲着也是闲着
+    let xmtv = MockXmtv::start(剧目).await.unwrap();
+    let mut net = SimNet::pointing_at("127.0.0.1:9".parse().unwrap(), 3)
+        .await
+        .unwrap();
+    net.redirect(xi_cast_core::xmtv::API_HOST, xmtv.addr);
+
+    let cfg = Config {
+        // 本机上不可能有 DLNA 设备的地址 —— 模拟电视关着
+        fixed_ip: Some("127.0.0.2"),
+        scan_ms: 200,
+        idle_sync_every: 1,
+        ..快节奏配置()
+    };
+    let catalog = Catalog::open(MockFlash::new(分区)).unwrap();
+    let mut app = App::new(net, catalog, cfg);
+
+    assert_eq!(app.catalog.summary().items, 0, "一开始 flash 是空的");
+    assert!(app.find_renderer().await.is_none(), "电视没开就该找不到");
+
+    app.idle_update(0).await;
+    assert!(
+        app.catalog.summary().items > 0,
+        "等电视的空当里就该把节目表拉下来了，而不是干等着"
+    );
+}
+
+#[tokio::test]
+async fn 等电视的空当里不会把上游问烂() {
+    // 一轮找电视失败在板子上约一分钟。要是每轮都更新，就是一天一千多次
+    // 请求，而上游一天才多一条节目
+    let xmtv = MockXmtv::start(剧目).await.unwrap();
+    let mut net = SimNet::pointing_at("127.0.0.1:9".parse().unwrap(), 3)
+        .await
+        .unwrap();
+    net.redirect(xi_cast_core::xmtv::API_HOST, xmtv.addr);
+
+    let cfg = Config {
+        fixed_ip: Some("127.0.0.2"),
+        scan_ms: 200,
+        idle_sync_every: 5,
+        ..快节奏配置()
+    };
+    let catalog = Catalog::open(MockFlash::new(分区)).unwrap();
+    let mut app = App::new(net, catalog, cfg);
+
+    let 问了几次 = || xmtv.api_hits.load(std::sync::atomic::Ordering::SeqCst);
+
+    app.idle_update(0).await;
+    let 第一轮之后 = 问了几次();
+    assert!(第一轮之后 > 0, "刚落空那一轮就该更新一次，不用等");
+
+    for round in 1..5 {
+        app.idle_update(round).await;
+    }
+    assert_eq!(问了几次(), 第一轮之后, "中间这几轮一次都不该去问上游");
+
+    app.idle_update(5).await;
+    assert!(问了几次() > 第一轮之后, "到第 5 轮该再更新一次");
+}
+
+#[tokio::test]
+async fn 把空当更新关掉就真的不更新() {
+    let xmtv = MockXmtv::start(剧目).await.unwrap();
+    let mut net = SimNet::pointing_at("127.0.0.1:9".parse().unwrap(), 3)
+        .await
+        .unwrap();
+    net.redirect(xi_cast_core::xmtv::API_HOST, xmtv.addr);
+
+    let cfg = Config {
+        fixed_ip: Some("127.0.0.2"),
+        scan_ms: 200,
+        idle_sync_every: 0,
+        ..快节奏配置()
+    };
+    let catalog = Catalog::open(MockFlash::new(分区)).unwrap();
+    let mut app = App::new(net, catalog, cfg);
+
+    for round in 0..8 {
+        app.idle_update(round).await;
+    }
+    assert_eq!(
+        xmtv.api_hits.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "配成 0 就是明说了不要这个行为"
+    );
+    assert_eq!(app.catalog.summary().items, 0);
+}
+
+#[tokio::test]
 async fn 有新节目时只补新的那几条() {
     let mut t = 搭台(2, MockFlash::new(分区)).await;
     t.app.sync_new().await.unwrap();
