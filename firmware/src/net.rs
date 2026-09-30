@@ -30,6 +30,16 @@ use xi_cast_core::ssdp;
 /// 10 秒是这么定的：分享页 43KB，慢的时候几秒；而电视没反应时又不想干等太久。
 const IO_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// **建连接**的超时，和 [`IO_TIMEOUT`] 是两件事。
+///
+/// 收一个 43KB 的分享页可能要好几秒，所以读写给 10 秒；但「对面这个端口上
+/// 到底有没有人听着」是毫秒级的问题 —— 局域网里 SYN 一来一回不到 1 毫秒。
+///
+/// 两件事共用 10 秒的代价实测很贵：电视没开机时 `probe_fixed_ip` 要挨个试
+/// 8 个常见端口，每个都等满 10 秒，一轮就是 90 秒 —— 也就是**开了电视之后
+/// 最多要等一分半才被发现**。3 秒够慢速链路重传两次，又把一轮压到半分钟内。
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+
 #[derive(Debug)]
 pub enum Error {
     /// 域名解析失败（DHCP 给的 DNS 不通，或者根本还没连上网）
@@ -113,33 +123,31 @@ impl Net for EmbassyNet {
         let mut socket = TcpSocket::new(*stack, &mut rx[..], &mut tx[..]);
         // 没有这一行，「电视接了连接然后装死」会让整个程序停在这里
         socket.set_timeout(Some(IO_TIMEOUT));
+        // 只给「建连接」这一步卡表，**不能**把上面的 resolve 一起卡进来：
+        // 这个网络上 DHCP 发的第一个 DNS 要经过路由器问上游，解析本身就可能
+        // 要十几秒，一起卡的话所有按域名的连接全都必败
         let 开始 = Instant::now();
-        socket
-            .connect(IpEndpoint::new(addr, port))
-            .await
-            .map_err(|e| {
-                // 具体是哪一种失败，排查方向差很远：
-                // NoRoute 基本是立刻返回（没路由 / ARP 问不到网关），
-                // 而 ConnectionReset 往 IO_TIMEOUT 那儿去（SYN 发出去没人应）
-                let 为什么 = match e {
-                    ConnectError::NoRoute => "没有路由（网关 ARP 问不到？）",
-                    ConnectError::ConnectionReset => "对方 reset 或等到超时都没应答",
-                    ConnectError::InvalidState => "socket 状态不对",
-                    ConnectError::TimedOut => "超时",
-                };
-                let 等了 = 开始.elapsed().as_millis();
-                // 连不上一个**写死的 IP** 是日常：`probe_fixed_ip` 本来就是挨个试
-                // 8 个常见端口，试不通才往下试 —— 电视开着的时候也照样有 7 条失败。
-                // 这种打成 warn 会每轮刷 8 条，把真正要看的那条（比如域名解析失败）
-                // 淹掉。连不上一个**域名**就不一样了，那是真出事了
-                if Ipv4Addr::from_str(host).is_ok() {
-                    debug!("连 {host}:{port} 失败: {为什么}，等了 {等了} 毫秒");
-                } else {
-                    warn!("连 {host}:{port}（{addr:?}）失败: {为什么}，等了 {等了} 毫秒");
-                }
-                Error::Connect
-            })?;
-        Ok(socket)
+        let 结果 = with_timeout(CONNECT_TIMEOUT, socket.connect(IpEndpoint::new(addr, port))).await;
+        let 为什么 = match 结果 {
+            Ok(Ok(())) => return Ok(socket),
+            // 具体是哪一种失败，排查方向差很远
+            Ok(Err(ConnectError::NoRoute)) => "没有路由（网关 ARP 问不到？）",
+            Ok(Err(ConnectError::ConnectionReset)) => "对方 reset",
+            Ok(Err(ConnectError::InvalidState)) => "socket 状态不对",
+            Ok(Err(ConnectError::TimedOut)) => "对方不理（smoltcp 自己的超时）",
+            Err(_) => "对方不理（等满 CONNECT_TIMEOUT）",
+        };
+        let 等了 = 开始.elapsed().as_millis();
+        // 连不上一个**写死的 IP** 是日常：`probe_fixed_ip` 本来就是挨个试
+        // 8 个常见端口，试不通才往下试 —— 电视开着的时候也照样有 7 条失败。
+        // 这种打成 warn 会每轮刷 8 条，把真正要看的那条（比如域名解析失败）
+        // 淹掉。连不上一个**域名**就不一样了，那是真出事了
+        if Ipv4Addr::from_str(host).is_ok() {
+            debug!("连 {host}:{port} 失败: {为什么}，等了 {等了} 毫秒");
+        } else {
+            warn!("连 {host}:{port}（{addr:?}）失败: {为什么}，等了 {等了} 毫秒");
+        }
+        Err(Error::Connect)
     }
 
     async fn ssdp_send(

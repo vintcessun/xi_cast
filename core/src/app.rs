@@ -108,9 +108,13 @@ pub struct Config {
     /// 0 表示关掉这个行为。
     ///
     /// 为什么要节流：一轮 =「找一遍电视（找不到）+ 等 [`Self::retry_ms`]」。
-    /// 板子上实测电视关着时一轮约 90 秒 —— 单播 M-SEARCH 等不到回应，
-    /// 再挨个试 [`WELL_KNOWN_DESC`] 里那几个端口，每个都要等到 TCP 超时。
-    /// 所以 10 轮大约是一刻钟问一次上游；上游一天才多一条节目，够勤快了。
+    /// 板子上实测电视关着时一轮约 30 秒 —— 单播 M-SEARCH 等不到回应要 3 秒，
+    /// 再挨个试 [`WELL_KNOWN_DESC`] 里那 8 个端口、每个 3 秒建连接超时共 24 秒，
+    /// 最后等 3 秒。所以 30 轮大约是一刻钟问一次上游；上游一天才多一条节目，
+    /// 够勤快了。
+    ///
+    /// 改这个数之前先想一下：它是「多少轮」而不是「多少分钟」，一轮多长取决于
+    /// 建连接的超时。要是哪天又调了那个超时，这里得跟着重新算。
     pub idle_sync_every: u32,
     /// 只认这个 IP 上的设备，**绝不广播扫描**。
     ///
@@ -148,7 +152,7 @@ impl Default for Config {
             poll_ms: 2000,
             first_pages: 5,
             sync_pages: 3,
-            idle_sync_every: 10,
+            idle_sync_every: 30,
             fixed_ip: None,
             fixed_device: None,
             cast_share_page: false,

@@ -2,6 +2,18 @@ fn main() {
     wifi_credentials();
     linker_be_nice();
     // 不链接 defmt.x：这个固件不用 defmt，日志走串口（见 Cargo.toml 里的说明）
+
+    // 让 ld 别再念「has a LOAD segment with RWX permissions」。
+    //
+    // 这条警告在 PC 上是有意义的（可写又可执行的段是攻击面），但 ESP32-S3
+    // 的内存布局本来就这样：指令和数据在同一片 SRAM 上，段权限由 esp-hal
+    // 的链接脚本定，改不了也不该改。
+    //
+    // 为什么用链接器开关而不是 `#![allow(linker_messages)]`：后者会把**所有**
+    // 链接器消息一起压掉，包括今后真正有用的那些（少个符号、脚本写错）。
+    // 这里只关掉这一条，lint 本身继续开着。
+    println!("cargo:rustc-link-arg=-Wl,--no-warn-rwx-segments");
+
     // make sure linkall.x is the last linker script (otherwise might cause problems with flip-link)
     println!("cargo:rustc-link-arg=-Tlinkall.x");
 }
