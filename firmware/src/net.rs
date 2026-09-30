@@ -109,13 +109,22 @@ impl EmbassyNet {
             Error::Dns
         })
     }
-}
 
-impl Net for EmbassyNet {
-    type Error = Error;
-    type Conn<'a> = TcpSocket<'a>;
-
-    async fn connect(&mut self, host: &str, port: u16) -> Result<Self::Conn<'_>, Self::Error> {
+    /// `connect` 和 `connect_probe` 的共同实现。
+    ///
+    /// `建连接超时` 只卡建连接这一步，**不包括**上面的 `resolve`：这个网络上
+    /// DHCP 发的第一个 DNS 要穿过路由器问上游，解析本身就可能十几秒，
+    /// 一起卡的话所有按域名的连接全必败。
+    ///
+    /// 读写超时始终是 [`IO_TIMEOUT`]：收一个 43KB 的分享页可能要好几秒，
+    /// 这和「对面有没有人听着」是两件事。
+    async fn 建连接(
+        &mut self,
+        host: &str,
+        port: u16,
+        建连接超时: Duration,
+        试探: bool,
+    ) -> Result<TcpSocket<'_>, Error> {
         let addr = self.resolve(host).await?;
 
         // 拆开借用：stack 是 Copy 的，收发缓冲区各借一次
@@ -123,11 +132,9 @@ impl Net for EmbassyNet {
         let mut socket = TcpSocket::new(*stack, &mut rx[..], &mut tx[..]);
         // 没有这一行，「电视接了连接然后装死」会让整个程序停在这里
         socket.set_timeout(Some(IO_TIMEOUT));
-        // 只给「建连接」这一步卡表，**不能**把上面的 resolve 一起卡进来：
-        // 这个网络上 DHCP 发的第一个 DNS 要经过路由器问上游，解析本身就可能
-        // 要十几秒，一起卡的话所有按域名的连接全都必败
+
         let 开始 = Instant::now();
-        let 结果 = with_timeout(CONNECT_TIMEOUT, socket.connect(IpEndpoint::new(addr, port))).await;
+        let 结果 = with_timeout(建连接超时, socket.connect(IpEndpoint::new(addr, port))).await;
         let 为什么 = match 结果 {
             Ok(Ok(())) => return Ok(socket),
             // 具体是哪一种失败，排查方向差很远
@@ -135,19 +142,36 @@ impl Net for EmbassyNet {
             Ok(Err(ConnectError::ConnectionReset)) => "对方 reset",
             Ok(Err(ConnectError::InvalidState)) => "socket 状态不对",
             Ok(Err(ConnectError::TimedOut)) => "对方不理（smoltcp 自己的超时）",
-            Err(_) => "对方不理（等满 CONNECT_TIMEOUT）",
+            Err(_) => "对方不理（等满建连接超时）",
         };
         let 等了 = 开始.elapsed().as_millis();
-        // 连不上一个**写死的 IP** 是日常：`probe_fixed_ip` 本来就是挨个试
-        // 8 个常见端口，试不通才往下试 —— 电视开着的时候也照样有 7 条失败。
-        // 这种打成 warn 会每轮刷 8 条，把真正要看的那条（比如域名解析失败）
-        // 淹掉。连不上一个**域名**就不一样了，那是真出事了
-        if Ipv4Addr::from_str(host).is_ok() {
-            debug!("连 {host}:{port} 失败: {为什么}，等了 {等了} 毫秒");
+        if 试探 {
+            // 试探失败是日常 —— 8 个端口里本来就只有一个能连上。
+            // 打成 warn 会每轮刷 8 条，把真问题淹掉
+            debug!("试探 {host}:{port} 没人听着: {为什么}，等了 {等了} 毫秒");
         } else {
             warn!("连 {host}:{port}（{addr:?}）失败: {为什么}，等了 {等了} 毫秒");
         }
         Err(Error::Connect)
+    }
+}
+
+impl Net for EmbassyNet {
+    type Error = Error;
+    type Conn<'a> = TcpSocket<'a>;
+
+    async fn connect(&mut self, host: &str, port: u16) -> Result<Self::Conn<'_>, Self::Error> {
+        // 本该连上的连接：超时给足，失败要吵
+        self.建连接(host, port, IO_TIMEOUT, false).await
+    }
+
+    async fn connect_probe(
+        &mut self,
+        host: &str,
+        port: u16,
+    ) -> Result<Self::Conn<'_>, Self::Error> {
+        // 碰运气试端口：快，而且失败不吵
+        self.建连接(host, port, CONNECT_TIMEOUT, true).await
     }
 
     async fn ssdp_send(

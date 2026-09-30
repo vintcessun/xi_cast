@@ -73,6 +73,25 @@ pub trait Net {
     /// 连一个 TCP 端口。
     async fn connect(&mut self, host: &str, port: u16) -> Result<Self::Conn<'_>, Self::Error>;
 
+    /// 连一个 TCP 端口，但这次只是**试探**：连不上是预期结果。
+    ///
+    /// 谁会用它：`probe_fixed_ip` 挨个试一串厂商常用的端口，里面绝大多数本来
+    /// 就没人听着 —— 电视开着的时候也有 7 条是失败的。
+    ///
+    /// 为什么要和 [`Net::connect`] 分开：这两种连接对「超时多久」和「失败要不要
+    /// 吵」的答案正好相反。试探要快（局域网里 SYN 一来一回不到 1 毫秒，等 10 秒
+    /// 纯属浪费，8 个端口就是 80 秒）、要安静（不然每轮刷 8 条把真问题淹掉）；
+    /// 而查播放状态、拉节目、取分享页那些**本该连上**，超时该给足、失败该吵。
+    ///
+    /// 平台不想区分就不用实现，默认就是 [`Net::connect`]。
+    async fn connect_probe(
+        &mut self,
+        host: &str,
+        port: u16,
+    ) -> Result<Self::Conn<'_>, Self::Error> {
+        self.connect(host, port).await
+    }
+
     /// 发一个 SSDP 报文。
     ///
     /// `dest` 为 `None` 时发到组播地址 239.255.255.250:1900（满世界找设备）；

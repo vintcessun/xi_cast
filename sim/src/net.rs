@@ -87,6 +87,14 @@ pub struct SimNet {
     overrides: Vec<(String, SocketAddr)>,
     /// 单次收发的超时，测试里可以调小
     io_timeout: Duration,
+    /// 分别数一数「本该连上」和「碰运气试探」各发生了多少次。
+    ///
+    /// 电脑上这两种连接行为一样（`connect_probe` 用默认实现），所以模拟器
+    /// 测不出超时长短的差别。但**哪一处该算试探**是能测的，而且值得钉死：
+    /// 要是哪天有人把查播放状态那条路也标成试探，板子上就会变成 3 秒超时，
+    /// 电视一忙就判它失联 —— 这正是真机上踩过的坑。
+    pub 正经连接次数: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    pub 试探连接次数: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl SimNet {
@@ -102,6 +110,8 @@ impl SimNet {
             seed,
             overrides: Vec::new(),
             io_timeout: IO_TIMEOUT,
+            正经连接次数: Default::default(),
+            试探连接次数: Default::default(),
         })
     }
 
@@ -114,6 +124,8 @@ impl SimNet {
             seed,
             overrides: Vec::new(),
             io_timeout: IO_TIMEOUT,
+            正经连接次数: Default::default(),
+            试探连接次数: Default::default(),
         })
     }
 
@@ -138,13 +150,9 @@ impl SimNet {
                 (host, port).to_socket_addrs().ok()?.next()
             })
     }
-}
 
-impl Net for SimNet {
-    type Error = Error;
-    type Conn<'a> = Conn;
-
-    async fn connect(&mut self, host: &str, port: u16) -> Result<Self::Conn<'_>, Self::Error> {
+    /// `connect` 和 `connect_probe` 的共同实现。
+    async fn 连接(&mut self, host: &str, port: u16) -> Result<Conn, Error> {
         let addr = self
             .resolve(host, port)
             .ok_or(Error::Io(std::io::Error::new(
@@ -160,6 +168,28 @@ impl Net for SimNet {
             stream,
             timeout: self.io_timeout,
         })
+    }
+}
+
+impl Net for SimNet {
+    type Error = Error;
+    type Conn<'a> = Conn;
+
+    async fn connect(&mut self, host: &str, port: u16) -> Result<Self::Conn<'_>, Self::Error> {
+        self.正经连接次数
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.连接(host, port).await
+    }
+
+    async fn connect_probe(
+        &mut self,
+        host: &str,
+        port: u16,
+    ) -> Result<Self::Conn<'_>, Self::Error> {
+        self.试探连接次数
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // 电脑上不区分快慢，只记一笔是谁来的
+        self.连接(host, port).await
     }
 
     async fn ssdp_send(

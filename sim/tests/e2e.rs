@@ -348,6 +348,74 @@ async fn 写死的电视没开机时只等它不投别人() {
     assert_eq!(别人家的盒子.play_count(), 0, "一次都不该碰别人家的设备");
 }
 
+/// 钉死「哪一处算试探」。
+///
+/// 真机上踩过这个坑：`probe_fixed_ip` 挨个试 8 个端口，每个等满 10 秒的收发
+/// 超时，一轮 86 秒 —— 开了电视最多等一分半才被发现。缩短超时时我一开始
+/// 用「目标是不是 IP 字面量」来区分，结果把投屏路径一起缩了（电视地址也是
+/// IP 字面量），电视忙着去取视频那一下就报「查状态失败: 连不上」。
+///
+/// 所以区分的依据必须是「这个地址是不是碰运气猜的」，而这件事只有核心库
+/// 知道。下面两条各守一半。
+#[tokio::test]
+async fn 碰运气试端口才算试探() {
+    use std::sync::atomic::Ordering;
+
+    let xmtv = MockXmtv::start(剧目).await.unwrap();
+    let mut net = SimNet::pointing_at("127.0.0.1:9".parse().unwrap(), 3)
+        .await
+        .unwrap();
+    net.redirect(xi_cast_core::xmtv::API_HOST, xmtv.addr);
+
+    let cfg = Config {
+        // 本机上不可能有 DLNA 设备的地址：单播搜索没人应，八个端口全试一遍
+        fixed_ip: Some("127.0.0.2"),
+        scan_ms: 200,
+        ..快节奏配置()
+    };
+    let catalog = Catalog::open(MockFlash::new(分区)).unwrap();
+    let mut app = App::new(net, catalog, cfg);
+
+    assert!(app.find_renderer().await.is_none());
+    assert_eq!(
+        app.net.试探连接次数.load(Ordering::SeqCst),
+        8,
+        "WELL_KNOWN_DESC 里那 8 个地址都是碰运气猜的，都该走试探"
+    );
+    assert_eq!(
+        app.net.正经连接次数.load(Ordering::SeqCst),
+        0,
+        "这条路上没有任何「本该连上」的连接"
+    );
+}
+
+#[tokio::test]
+async fn 播放路径上一次都不该用试探连接() {
+    use std::sync::atomic::Ordering;
+
+    let mut t = 搭台(2, MockFlash::new(分区)).await;
+    t.app.sync_new().await.expect("拉节目不该失败");
+    let renderer = t.app.find_renderer().await.expect("该扫到假电视");
+    let series = t.app.pick().expect("挑得出戏");
+    let video = t
+        .app
+        .resolve(&series.episodes[0])
+        .await
+        .expect("解得出直链");
+    t.app
+        .cast(&renderer, &video, &series.title)
+        .await
+        .expect("投屏失败");
+    t.app.transport_state(&renderer).await.unwrap();
+
+    assert_eq!(
+        t.app.net.试探连接次数.load(Ordering::SeqCst),
+        0,
+        "拉节目、SSDP 扫到的地址、取分享页、投屏、查状态 —— 一个都不是碰运气猜的，         都该用正常的超时。把它们当试探的代价是电视一忙就被判失联"
+    );
+    assert!(t.app.net.正经连接次数.load(Ordering::SeqCst) > 0);
+}
+
 #[tokio::test]
 async fn 电视没开机的时候节目表照样会更新() {
     // 这条盯的是一个真缺陷：原来 `sync_new` 挂在「找到电视」之后，

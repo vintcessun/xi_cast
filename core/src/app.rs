@@ -203,7 +203,7 @@ where
 
         if let Some(fixed) = self.cfg.fixed_device {
             trace_info!("用写死的设备地址: {}", fixed);
-            let found = self.fetch_renderer(fixed).await;
+            let found = self.fetch_renderer(fixed, false).await;
             if found.is_none() {
                 // 不退回扫描：地址是人指定的，连不上就是电视没开机
                 trace_warn!("写死的那台连不上（电视没开机？），不会去扫别的设备");
@@ -213,7 +213,7 @@ where
 
         if let Some(device) = self.catalog.summary().device.clone() {
             trace_info!("先试上次那台设备: {}", device.location.as_str());
-            if let Some(r) = self.fetch_renderer(&device.location).await {
+            if let Some(r) = self.fetch_renderer(&device.location, false).await {
                 trace_info!("上次那台还在: {}", r.friendly_name.as_str());
                 return Some(r);
             }
@@ -282,7 +282,7 @@ where
         }
 
         if let Some(location) = location
-            && let Some(renderer) = self.fetch_renderer(&location).await
+            && let Some(renderer) = self.fetch_renderer(&location, false).await
         {
             trace_info!("找到电视: {}", renderer.friendly_name.as_str());
             return Some(renderer);
@@ -296,7 +296,7 @@ where
                 continue;
             }
             trace_debug!("试 {}", url_buf.as_str());
-            if let Some(renderer) = self.fetch_renderer(&url_buf).await {
+            if let Some(renderer) = self.fetch_renderer(&url_buf, true).await {
                 trace_info!(
                     "找到电视: {} @ {}",
                     renderer.friendly_name.as_str(),
@@ -372,7 +372,7 @@ where
         // 逐个抓设备描述，挑出能投屏的
         let mut fallback: Option<Found> = None;
         for endpoint in &candidates {
-            let Some(renderer) = self.fetch_renderer(&endpoint.location).await else {
+            let Some(renderer) = self.fetch_renderer(&endpoint.location, false).await else {
                 continue;
             };
             let 名字对上了 =
@@ -401,9 +401,16 @@ where
     }
 
     /// 抓设备描述并认出 AVTransport 服务。
-    async fn fetch_renderer(&mut self, location: &str) -> Option<Renderer> {
+    /// `试探` 为 true 表示「这个地址只是碰运气猜的，连不上很正常」，
+    /// 平台层会据此用更短的超时、更安静的日志（见 [`Net::connect_probe`]）。
+    async fn fetch_renderer(&mut self, location: &str, 试探: bool) -> Option<Renderer> {
         let parsed = url::parse(location)?;
-        let mut conn = self.net.connect(parsed.host, parsed.port).await.ok()?;
+        let mut conn = if 试探 {
+            self.net.connect_probe(parsed.host, parsed.port).await
+        } else {
+            self.net.connect(parsed.host, parsed.port).await
+        }
+        .ok()?;
 
         let mut xml = [0u8; DESC_BUF];
         let mut len = 0usize;
