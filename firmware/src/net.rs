@@ -16,11 +16,12 @@ use core::net::Ipv4Addr;
 use core::str::FromStr;
 
 use embassy_net::dns::DnsQueryType;
-use embassy_net::tcp::TcpSocket;
+use embassy_net::tcp::{ConnectError, TcpSocket};
 use embassy_net::udp::{PacketMetadata, UdpSocket};
 use embassy_net::{IpAddress, IpEndpoint, Stack};
-use embassy_time::{Duration, Timer, with_timeout};
+use embassy_time::{Duration, Instant, Timer, with_timeout};
 use esp_hal::rng::Rng;
+use log::{debug, warn};
 use xi_cast_core::net::Net;
 use xi_cast_core::ssdp;
 
@@ -81,12 +82,22 @@ impl EmbassyNet {
         if let Ok(ip) = Ipv4Addr::from_str(host) {
             return Ok(IpAddress::Ipv4(ip));
         }
+        // 为什么要打这条日志：上层把「解析不了」和「连不上」都归成
+        // core 那个 `net::Error::Connect`，日志里只剩「连不上」三个字。
+        // 真出问题时这两件事的排查方向完全不同 —— 一个查 DHCP 给的 DNS，
+        // 一个查路由和对方端口。板子上唯一的窗口就是串口，这里不说就没人知道了
         let found = self
             .stack
             .dns_query(host, DnsQueryType::A)
             .await
-            .map_err(|_| Error::Dns)?;
-        found.first().copied().ok_or(Error::Dns)
+            .map_err(|e| {
+                warn!("解析域名 {host} 失败: {e:?}（DHCP 给的 DNS 不通？）");
+                Error::Dns
+            })?;
+        found.first().copied().ok_or_else(|| {
+            warn!("解析域名 {host} 没返回任何地址");
+            Error::Dns
+        })
     }
 }
 
@@ -102,10 +113,32 @@ impl Net for EmbassyNet {
         let mut socket = TcpSocket::new(*stack, &mut rx[..], &mut tx[..]);
         // 没有这一行，「电视接了连接然后装死」会让整个程序停在这里
         socket.set_timeout(Some(IO_TIMEOUT));
+        let 开始 = Instant::now();
         socket
             .connect(IpEndpoint::new(addr, port))
             .await
-            .map_err(|_| Error::Connect)?;
+            .map_err(|e| {
+                // 具体是哪一种失败，排查方向差很远：
+                // NoRoute 基本是立刻返回（没路由 / ARP 问不到网关），
+                // 而 ConnectionReset 往 IO_TIMEOUT 那儿去（SYN 发出去没人应）
+                let 为什么 = match e {
+                    ConnectError::NoRoute => "没有路由（网关 ARP 问不到？）",
+                    ConnectError::ConnectionReset => "对方 reset 或等到超时都没应答",
+                    ConnectError::InvalidState => "socket 状态不对",
+                    ConnectError::TimedOut => "超时",
+                };
+                let 等了 = 开始.elapsed().as_millis();
+                // 连不上一个**写死的 IP** 是日常：`probe_fixed_ip` 本来就是挨个试
+                // 8 个常见端口，试不通才往下试 —— 电视开着的时候也照样有 7 条失败。
+                // 这种打成 warn 会每轮刷 8 条，把真正要看的那条（比如域名解析失败）
+                // 淹掉。连不上一个**域名**就不一样了，那是真出事了
+                if Ipv4Addr::from_str(host).is_ok() {
+                    debug!("连 {host}:{port} 失败: {为什么}，等了 {等了} 毫秒");
+                } else {
+                    warn!("连 {host}:{port}（{addr:?}）失败: {为什么}，等了 {等了} 毫秒");
+                }
+                Error::Connect
+            })?;
         Ok(socket)
     }
 

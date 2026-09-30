@@ -30,6 +30,7 @@
 )]
 
 use embassy_executor::Spawner;
+use embassy_net::dns::DnsQueryType;
 use embassy_net::{Runner, StackResources};
 use embassy_time::{Duration, Timer};
 use esp_hal::clock::CpuClock;
@@ -214,7 +215,35 @@ async fn main(spawner: Spawner) -> ! {
     info!("等 WiFi 连上「{SSID}」…");
     stack.wait_config_up().await;
     if let Some(cfg) = stack.config_v4() {
-        info!("拿到 IP: {} 网关 {:?}", cfg.address, cfg.gateway);
+        // DNS 也打出来：路由器有时会发一个不在本网段、压根不可达的地址
+        // （实测家里这台就发过 192.168.1.1），而解析失败在上层只剩
+        // 「连不上」三个字，不打出来就只能靠猜
+        info!(
+            "拿到 IP: {} 网关 {:?} DNS {:?}",
+            cfg.address, cfg.gateway, cfg.dns_servers
+        );
+    }
+
+    // 开机自检：先解析一次上游的域名。
+    //
+    // 为什么值得占一行日志：板子上唯一的窗口就是串口，「网络到底通不通」
+    // 最好一开机就有答案。没有这一条的话，DNS 不通只会在十几分钟后
+    // 更新节目时以一句「连不上」的形式冒出来，而那时候已经分不清
+    // 是解析不了还是对方没开机了。
+    match stack
+        .dns_query(xi_cast_core::xmtv::API_HOST, DnsQueryType::A)
+        .await
+    {
+        Ok(addrs) => info!(
+            "网络自检：{} 解析到 {:?}",
+            xi_cast_core::xmtv::API_HOST,
+            addrs
+        ),
+        Err(e) => warn!(
+            "网络自检：{} 解析不了（{:?}）—— 路由器发的 DNS 是不是不可达？",
+            xi_cast_core::xmtv::API_HOST,
+            e
+        ),
     }
 
     // ---------------------------------------------------------------- ③ 开跑
