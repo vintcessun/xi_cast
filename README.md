@@ -68,8 +68,20 @@ espflash flash --partition-table partitions.csv --after hard-reset --monitor `
 `--partition-table` 每次都带上最省心（重烧应用不会动到数据分区，
 已经存下来的节目一条都不会丢）。
 
+> **`cargo build --release` 那行不能省。** `espflash` 吃的是一个**文件路径**，
+> 它自己不会去编译。栽过一次：改完代码只跑了 `cargo clippy`（只检查、
+> 不产出二进制）就直接 `espflash flash`，烧进去的是上一次的旧固件，
+> 然后对着「改动怎么一点效果都没有」量了半天时间。
+
 **日志走串口，不用调试器。** 板子插原生 USB 口（设备管理器里显示
 `USB JTAG/serial debug unit`）就行，同一根线既烧录又出日志。
+
+> 原生口枚举不出来的话（设备管理器里是
+> **「未知 USB 设备(设备描述符请求失败)」**，`espflash` 则报
+> `No serial ports could be detected`），别急着怀疑板子：这是 USB 物理层
+> 没谈拢，换根确定能传数据的线、换个口（优先主机后面板，别用扩展坞）多试
+> 一两次就好。也可以直接插标 `COM` 的那个口走 CH340 桥（设备管理器里是
+> `USB-SERIAL CH340`），日志一样出，只是要显式指定 `--port COMxx`。
 
 > 这里踩过一个坑：模板默认用 `defmt` + RTT，配 `probe-rs run`。
 > 在这块板子上烧录一切正常，但 **RTT 一个字都读不出来** —— 等于没有日志，
